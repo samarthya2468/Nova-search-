@@ -1,0 +1,6 @@
+{
+  "name": "NovaSearch",
+  "description": "AI-powered quick search engine & image generator for custom prompts and fast answers.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
