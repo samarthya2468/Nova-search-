@@ -327,7 +327,7 @@ fun SettingsBottomSheet(
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(
-                    text = "NovaSearch connects to Google Gemini 3.5 Flash for rapid answers and Gemini 2.5 Flash Image for photo generation.",
+                    text = "NovaSearch connects to Google Gemini for rapid answers and AI image generation.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

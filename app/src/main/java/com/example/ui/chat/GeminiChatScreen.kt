@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import com.example.data.local.SearchHistoryEntity
+import com.example.data.remote.GeminiClient
 import com.example.data.repository.ImageRepository
 import com.example.data.repository.SearchRepository
 import com.example.ui.components.ImageSkeletonScreen
@@ -235,8 +236,23 @@ fun GeminiChatScreen(
                     }
                 }
 
-                // Right: New Chat circular icon button
+                // Right: Settings key icon + New Chat circular icon button
                 Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onOpenSettings,
+                        modifier = Modifier
+                            .size(42.dp)
+                            .clip(CircleShape)
+                            .testTag("gemini_top_settings_button")
+                    ) {
+                        Icon(
+                            imageVector = if (GeminiClient.isApiKeyConfigured(context)) Icons.Outlined.Settings else Icons.Default.Key,
+                            contentDescription = "AI Settings",
+                            tint = if (GeminiClient.isApiKeyConfigured(context)) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(24.dp)
+                        )
+                    }
+
                     IconButton(
                         onClick = {
                             messages = emptyList()

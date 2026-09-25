@@ -90,7 +90,7 @@ fun SearchSkeletonScreen(
     var phaseIndex by remember { mutableIntStateOf(0) }
     val phases = remember {
         listOf(
-            "Connecting to Gemini 3.5 Flash...",
+            "Connecting to Gemini AI Engine...",
             "Analyzing query & context...",
             "Synthesizing structured answer...",
             "Extracting key takeaways & related queries..."
