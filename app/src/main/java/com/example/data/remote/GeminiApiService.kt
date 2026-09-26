@@ -12,6 +12,7 @@ import android.graphics.RectF
 import android.graphics.Shader
 import android.util.Base64
 import com.example.BuildConfig
+import com.example.ui.chat.AttachedFile
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -53,7 +54,8 @@ object GeminiClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
     private const val PREFS_NAME = "novasearch_prefs"
     private const val KEY_CUSTOM_API_KEY = "custom_gemini_api_key"
-private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2KwvvCawAoNMru6iQQ"
+    private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2KwvvCawAoNMru6iQQ"
+
     // Fast, responsive OkHttpClient with short timeouts (12s connect, 20s read) to eliminate long hangs
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
@@ -80,11 +82,15 @@ private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2Kw
         if (!customKey.isNullOrBlank()) {
             return customKey
         }
-        return try {
+        val buildKey = try {
             BuildConfig.GEMINI_API_KEY.trim()
         } catch (e: Exception) {
             ""
         }
+        if (buildKey.isNotBlank() && buildKey != "MY_GEMINI_API_KEY") {
+            return buildKey
+        }
+        return DEFAULT_EMBEDDED_KEY
     }
 
     fun saveCustomApiKey(context: Context, key: String) {
@@ -104,7 +110,8 @@ private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2Kw
         context: Context,
         query: String,
         mode: String,
-        customPrompt: String?
+        customPrompt: String?,
+        attachments: List<AttachedFile> = emptyList()
     ): SearchResult = withContext(Dispatchers.IO) {
         val apiKey = getApiKey(context)
 
@@ -113,11 +120,10 @@ private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2Kw
             return@withContext getVerifiedKnowledgeResponse(query, mode, customPrompt, isOfflineFallback = false)
         }
 
-        // Ordered list of models to try for optimal speed and reliability
+        // Ordered list of models to try for optimal speed and multimodal accuracy
         val candidateModels = listOf(
             "gemini-2.5-flash",
-            "gemini-2.0-flash",
-            "gemini-1.5-flash"
+            "gemini-3.5-flash"
         )
 
         val systemPrompt = buildSystemPrompt(mode, customPrompt)
@@ -127,12 +133,33 @@ private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2Kw
             "User Search Question: $query"
         }
 
+        val partsArray = JSONArray()
+
+        // 1. Add file attachments (PDFs, Images, Audio, or text documents)
+        for (attachment in attachments) {
+            val mime = attachment.mimeType
+            val base64 = attachment.base64Data
+            if (!base64.isNullOrBlank() && (mime.startsWith("image/") || mime == "application/pdf" || mime.startsWith("audio/"))) {
+                partsArray.put(JSONObject().apply {
+                    put("inlineData", JSONObject().apply {
+                        put("mimeType", mime)
+                        put("data", base64)
+                    })
+                })
+            } else if (!attachment.textContent.isNullOrBlank()) {
+                partsArray.put(JSONObject().apply {
+                    put("text", "--- Attached File: ${attachment.name} (${attachment.mimeType}) ---\n${attachment.textContent}\n--- End of File: ${attachment.name} ---")
+                })
+            }
+        }
+
+        // 2. Add user prompt text
+        partsArray.put(JSONObject().put("text", fullUserQuery))
+
         val requestJson = JSONObject().apply {
             put("contents", JSONArray().apply {
                 put(JSONObject().apply {
-                    put("parts", JSONArray().apply {
-                        put(JSONObject().put("text", fullUserQuery))
-                    })
+                    put("parts", partsArray)
                 })
             })
             put("systemInstruction", JSONObject().apply {

@@ -2,7 +2,11 @@ package com.example.ui.chat
 
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
 import android.util.Base64
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.PickVisualMediaRequest
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.*
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -37,6 +41,7 @@ import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -49,6 +54,7 @@ import com.example.ui.components.RichAnswerRenderer
 import com.example.ui.components.SearchSkeletonScreen
 import com.example.ui.components.copyToClipboard
 import com.example.ui.components.shareText
+import com.example.util.FileAttachmentHelper
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -75,6 +81,43 @@ fun GeminiChatScreen(
     var isLoading by remember { mutableStateOf(false) }
     var showToolMenu by remember { mutableStateOf(false) }
     var fullscreenBitmap by remember { mutableStateOf<Bitmap?>(null) }
+
+    // File Attachments State
+    var pendingAttachments by remember { mutableStateOf<List<AttachedFile>>(emptyList()) }
+    var isProcessingFile by remember { mutableStateOf(false) }
+
+    // File pickers: Documents / Any files & Photos / Images
+    val documentPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                isProcessingFile = true
+                val attached = FileAttachmentHelper.processUri(context, uri)
+                if (attached != null) {
+                    pendingAttachments = pendingAttachments + attached
+                }
+                isProcessingFile = false
+                showToolMenu = false
+            }
+        }
+    }
+
+    val imagePickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.PickVisualMedia()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            coroutineScope.launch {
+                isProcessingFile = true
+                val attached = FileAttachmentHelper.processUri(context, uri)
+                if (attached != null) {
+                    pendingAttachments = pendingAttachments + attached
+                }
+                isProcessingFile = false
+                showToolMenu = false
+            }
+        }
+    }
 
     // Chat messages for current session
     var messages by remember { mutableStateOf<List<ChatMessage>>(emptyList()) }
@@ -118,15 +161,23 @@ fun GeminiChatScreen(
     }
 
     fun handleSend(prompt: String) {
-        if (prompt.isBlank() || isLoading) return
-        val currentPrompt = prompt.trim()
+        if ((prompt.isBlank() && pendingAttachments.isEmpty()) || isLoading) return
+        val currentAttachments = pendingAttachments
+        val currentPrompt = if (prompt.isBlank() && currentAttachments.isNotEmpty()) {
+            "Please analyze, explain, and summarize the contents of the attached ${if (currentAttachments.size > 1) "files" else currentAttachments.first().name}."
+        } else {
+            prompt.trim()
+        }
+
         inputText = ""
+        pendingAttachments = emptyList()
         keyboardController?.hide()
 
         val userMessage = ChatMessage(
             isUser = true,
             text = currentPrompt,
-            mode = if (isImageMode) "Image" else selectedMode
+            mode = if (isImageMode) "Image" else selectedMode,
+            attachedFiles = currentAttachments
         )
         messages = messages + userMessage
         isLoading = true
@@ -161,11 +212,12 @@ fun GeminiChatScreen(
                 messages = messages + aiMessage
                 isLoading = false
             } else {
-                // Execute Search / Conversation via SearchRepository
+                // Execute Multimodal Search / Document Conversation via SearchRepository
                 val result = searchRepository.executeSearch(
                     query = currentPrompt,
                     mode = selectedMode,
-                    customPrompt = customPromptModifier.ifBlank { null }
+                    customPrompt = customPromptModifier.ifBlank { null },
+                    attachments = currentAttachments
                 )
 
                 val aiMessage = ChatMessage(
@@ -349,6 +401,103 @@ fun GeminiChatScreen(
                     )
                 }
 
+                // Tray of pending attached files
+                AnimatedVisibility(
+                    visible = pendingAttachments.isNotEmpty(),
+                    enter = expandVertically() + fadeIn(),
+                    exit = shrinkVertically() + fadeOut()
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        pendingAttachments.forEach { file ->
+                            Surface(
+                                shape = RoundedCornerShape(14.dp),
+                                color = MaterialTheme.colorScheme.surfaceVariant,
+                                border = CardDefaults.outlinedCardBorder()
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(start = 8.dp, end = 4.dp, top = 4.dp, bottom = 4.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    if (file.previewBitmap != null) {
+                                        Image(
+                                            bitmap = file.previewBitmap.asImageBitmap(),
+                                            contentDescription = null,
+                                            modifier = Modifier
+                                                .size(28.dp)
+                                                .clip(RoundedCornerShape(6.dp)),
+                                            contentScale = ContentScale.Crop
+                                        )
+                                    } else {
+                                        Icon(
+                                            imageVector = if (file.mimeType == "application/pdf") Icons.Outlined.PictureAsPdf else Icons.Outlined.Description,
+                                            contentDescription = null,
+                                            tint = if (file.mimeType == "application/pdf") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(20.dp)
+                                        )
+                                    }
+
+                                    Column {
+                                        Text(
+                                            text = file.name,
+                                            style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                            modifier = Modifier.widthIn(max = 120.dp)
+                                        )
+                                        Text(
+                                            text = FileAttachmentHelper.formatFileSize(file.sizeBytes),
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                        )
+                                    }
+
+                                    IconButton(
+                                        onClick = { pendingAttachments = pendingAttachments - file },
+                                        modifier = Modifier.size(24.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Default.Close,
+                                            contentDescription = "Remove attachment",
+                                            modifier = Modifier.size(16.dp),
+                                            tint = MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // File reading in progress indicator
+                AnimatedVisibility(visible = isProcessingFile) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(14.dp),
+                            strokeWidth = 2.dp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "Processing attached document...",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+                }
+
                 // Sleek Pill Input Bar matching Gemini's bottom search bar
                 Surface(
                     modifier = Modifier.fillMaxWidth(),
@@ -359,14 +508,14 @@ fun GeminiChatScreen(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
-                        // Left "+" tool button (opens popover menu like Screenshot_20260923_200146.jpg)
+                        // Left "+" tool button (opens modal menu)
                         IconButton(
                             onClick = { showToolMenu = !showToolMenu },
                             modifier = Modifier
-                                .size(40.dp)
+                                .size(38.dp)
                                 .clip(CircleShape)
                                 .testTag("gemini_tool_menu_button")
                         ) {
@@ -377,13 +526,30 @@ fun GeminiChatScreen(
                             )
                         }
 
+                        // Direct Paperclip Attachment Button
+                        IconButton(
+                            onClick = { documentPickerLauncher.launch("*/*") },
+                            modifier = Modifier
+                                .size(38.dp)
+                                .clip(CircleShape)
+                                .testTag("gemini_attach_file_button")
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.AttachFile,
+                                contentDescription = "Attach file or document",
+                                tint = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+
                         // Text Input Field
                         TextField(
                             value = inputText,
                             onValueChange = { inputText = it },
                             placeholder = {
                                 Text(
-                                    text = if (isImageMode) "Describe an image to generate..." else "Ask anything...",
+                                    text = if (isImageMode) "Describe an image to generate..." 
+                                           else if (pendingAttachments.isNotEmpty()) "Ask about attached file..." 
+                                           else "Ask anything, attach files...",
                                     style = MaterialTheme.typography.bodyMedium,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
                                 )
@@ -404,7 +570,7 @@ fun GeminiChatScreen(
                         )
 
                         // Right Action: Send button or Voice/Soundwave button
-                        if (inputText.isNotBlank()) {
+                        if (inputText.isNotBlank() || pendingAttachments.isNotEmpty()) {
                             FilledIconButton(
                                 onClick = { handleSend(inputText) },
                                 enabled = !isLoading,
@@ -447,6 +613,162 @@ fun GeminiChatScreen(
                                         contentDescription = "Live",
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(18.dp)
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Tools & Attachment Selection Bottom Sheet
+            if (showToolMenu) {
+                ModalBottomSheet(
+                    onDismissRequest = { showToolMenu = false },
+                    containerColor = MaterialTheme.colorScheme.surface,
+                    shape = RoundedCornerShape(topStart = 24.dp, topEnd = 24.dp)
+                ) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 20.dp)
+                            .padding(bottom = 32.dp),
+                        verticalArrangement = Arrangement.spacedBy(12.dp)
+                    ) {
+                        Text(
+                            text = "Add to NovaSearch",
+                            style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold),
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+
+                        // 1. Upload File / Document
+                        Surface(
+                            onClick = {
+                                documentPickerLauncher.launch("*/*")
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = CardDefaults.outlinedCardBorder()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.UploadFile,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Upload Document or File",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "PDF, TXT, CSV, Code, JSON, Markdown",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        // 2. Upload Photo / Image
+                        Surface(
+                            onClick = {
+                                imagePickerLauncher.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = CardDefaults.outlinedCardBorder()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.secondaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Image,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onSecondaryContainer,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Upload Photo or Image",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Visual Q&A, diagram OCR, document photo",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+
+                        // 3. Create AI Image Mode
+                        Surface(
+                            onClick = {
+                                isImageMode = true
+                                showToolMenu = false
+                            },
+                            shape = RoundedCornerShape(16.dp),
+                            color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                            border = CardDefaults.outlinedCardBorder()
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(14.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(14.dp)
+                            ) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(44.dp)
+                                        .clip(CircleShape)
+                                        .background(MaterialTheme.colorScheme.tertiaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Outlined.Palette,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                }
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = "Create an AI Image",
+                                        style = MaterialTheme.typography.bodyLarge.copy(fontWeight = FontWeight.SemiBold)
+                                    )
+                                    Text(
+                                        text = "Photorealistic, digital art, anime, or 3D renders",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant
                                     )
                                 }
                             }
@@ -572,12 +894,89 @@ fun GeminiChatScreen(
                                     border = CardDefaults.outlinedCardBorder(),
                                     modifier = Modifier.widthIn(max = 320.dp)
                                 ) {
-                                    Text(
-                                        text = message.text,
-                                        style = MaterialTheme.typography.bodyLarge,
-                                        color = MaterialTheme.colorScheme.onSurface,
-                                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                                    )
+                                    Column(
+                                        modifier = Modifier.padding(12.dp),
+                                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                                    ) {
+                                        // Display attached files if present
+                                        if (message.attachedFiles.isNotEmpty()) {
+                                            message.attachedFiles.forEach { file ->
+                                                Surface(
+                                                    shape = RoundedCornerShape(12.dp),
+                                                    color = MaterialTheme.colorScheme.surface.copy(alpha = 0.9f),
+                                                    border = CardDefaults.outlinedCardBorder()
+                                                ) {
+                                                    if (file.previewBitmap != null) {
+                                                        Column {
+                                                            Image(
+                                                                bitmap = file.previewBitmap.asImageBitmap(),
+                                                                contentDescription = file.name,
+                                                                modifier = Modifier
+                                                                    .fillMaxWidth()
+                                                                    .heightIn(max = 160.dp)
+                                                                    .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                                                                    .clickable { fullscreenBitmap = file.previewBitmap },
+                                                                contentScale = ContentScale.Crop
+                                                            )
+                                                            Row(
+                                                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
+                                                                verticalAlignment = Alignment.CenterVertically,
+                                                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                                            ) {
+                                                                Icon(
+                                                                    imageVector = Icons.Outlined.Image,
+                                                                    contentDescription = null,
+                                                                    tint = MaterialTheme.colorScheme.primary,
+                                                                    modifier = Modifier.size(16.dp)
+                                                                )
+                                                                Text(
+                                                                    text = file.name,
+                                                                    style = MaterialTheme.typography.labelMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                            }
+                                                        }
+                                                    } else {
+                                                        Row(
+                                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 8.dp),
+                                                            verticalAlignment = Alignment.CenterVertically,
+                                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                                        ) {
+                                                            Icon(
+                                                                imageVector = if (file.mimeType == "application/pdf") Icons.Outlined.PictureAsPdf else Icons.Outlined.Description,
+                                                                contentDescription = null,
+                                                                tint = if (file.mimeType == "application/pdf") MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
+                                                                modifier = Modifier.size(24.dp)
+                                                            )
+                                                            Column {
+                                                                Text(
+                                                                    text = file.name,
+                                                                    style = MaterialTheme.typography.bodyMedium.copy(fontWeight = FontWeight.SemiBold),
+                                                                    maxLines = 1,
+                                                                    overflow = TextOverflow.Ellipsis
+                                                                )
+                                                                Text(
+                                                                    text = FileAttachmentHelper.formatFileSize(file.sizeBytes),
+                                                                    style = MaterialTheme.typography.labelSmall,
+                                                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                                                )
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if (message.text.isNotBlank()) {
+                                            Text(
+                                                text = message.text,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                color = MaterialTheme.colorScheme.onSurface,
+                                                modifier = Modifier.padding(horizontal = 4.dp)
+                                            )
+                                        }
+                                    }
                                 }
                             }
                         } else {

@@ -5,6 +5,7 @@ import com.example.data.local.AppDatabase
 import com.example.data.local.SearchHistoryEntity
 import com.example.data.remote.GeminiClient
 import com.example.data.remote.SearchResult
+import com.example.ui.chat.AttachedFile
 import kotlinx.coroutines.flow.Flow
 
 class SearchRepository(private val context: Context) {
@@ -17,14 +18,22 @@ class SearchRepository(private val context: Context) {
     suspend fun executeSearch(
         query: String,
         mode: String = "Quick",
-        customPrompt: String? = null
+        customPrompt: String? = null,
+        attachments: List<AttachedFile> = emptyList()
     ): SearchResult {
-        val result = GeminiClient.search(context, query, mode, customPrompt)
+        val result = GeminiClient.search(context, query, mode, customPrompt, attachments)
 
         // Save to Room database if search produced a valid answer
         if (result.answer.isNotBlank()) {
+            val displayQuery = if (attachments.isNotEmpty()) {
+                val fileNames = attachments.joinToString(", ") { it.name }
+                if (query.isNotBlank()) "📎 [$fileNames] $query" else "📎 [$fileNames]"
+            } else {
+                query
+            }
+
             val entity = SearchHistoryEntity(
-                query = query,
+                query = displayQuery,
                 answer = result.answer,
                 mode = mode,
                 customPrompt = customPrompt,
