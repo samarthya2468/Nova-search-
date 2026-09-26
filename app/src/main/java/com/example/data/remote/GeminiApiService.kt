@@ -53,7 +53,7 @@ object GeminiClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
     private const val PREFS_NAME = "novasearch_prefs"
     private const val KEY_CUSTOM_API_KEY = "custom_gemini_api_key"
-
+private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2KwvvCawAoNMru6iQQ"
     // Fast, responsive OkHttpClient with short timeouts (12s connect, 20s read) to eliminate long hangs
     private val okHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
