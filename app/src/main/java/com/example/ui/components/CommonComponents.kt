@@ -339,46 +339,78 @@ fun SettingsBottomSheet(
                         MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.4f),
                     shape = RoundedCornerShape(8.dp)
                 ) {
-                    Row(
+                    Column(
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(10.dp),
-                        verticalAlignment = Alignment.CenterVertically
+                        verticalArrangement = Arrangement.spacedBy(4.dp)
                     ) {
-                        Icon(
-                            imageVector = if (GeminiClient.isApiKeyConfigured(context)) Icons.Default.CheckCircle else Icons.Default.Warning,
-                            contentDescription = null,
-                            tint = if (GeminiClient.isApiKeyConfigured(context)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
-                            modifier = Modifier.size(20.dp)
-                        )
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(
-                            text = if (GeminiClient.isApiKeyConfigured(context))
-                                "API Key is active and ready"
-                            else
-                                "Key missing: using built-in interactive preview mode",
-                            style = MaterialTheme.typography.bodySmall,
-                            fontWeight = FontWeight.Medium
-                        )
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = if (GeminiClient.isApiKeyConfigured(context)) Icons.Default.CheckCircle else Icons.Default.Warning,
+                                contentDescription = null,
+                                tint = if (GeminiClient.isApiKeyConfigured(context)) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                                modifier = Modifier.size(20.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = if (GeminiClient.isApiKeyConfigured(context))
+                                    "Valid Gemini API Key Active"
+                                else if (currentKey.isNotBlank())
+                                    "Saved key format not recognized"
+                                else
+                                    "No Gemini API key set",
+                                style = MaterialTheme.typography.bodySmall,
+                                fontWeight = FontWeight.SemiBold
+                            )
+                        }
+                        if (currentKey.isNotBlank()) {
+                            Text(
+                                text = "Current: ${currentKey.take(8)}...${currentKey.takeLast(4)}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
                     }
                 }
 
                 OutlinedTextField(
                     value = inputKey,
                     onValueChange = { inputKey = it },
-                    label = { Text("Custom Gemini API Key") },
-                    placeholder = { Text("AIzaSy...") },
+                    label = { Text("Enter Gemini API Key") },
+                    placeholder = { Text("AQ.Ab... or AIzaSy...") },
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("api_key_input"),
-                    singleLine = true
+                    singleLine = true,
+                    supportingText = {
+                        if (inputKey.isNotBlank() && !inputKey.startsWith("AQ.") && !inputKey.startsWith("AIzaSy")) {
+                            Text(
+                                text = "⚠️ Keys from AI Studio start with 'AQ.' or 'AIzaSy'.",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        } else {
+                            Text("Paste key from aistudio.google.com/apikey")
+                        }
+                    }
                 )
 
-                Text(
-                    text = "Tip: You can get a free API key from Google AI Studio (aistudio.google.com).",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+                if (currentKey.isNotBlank()) {
+                    TextButton(
+                        onClick = {
+                            GeminiClient.saveCustomApiKey(context, "")
+                            currentKey = ""
+                            inputKey = ""
+                            onKeySaved("")
+                            Toast.makeText(context, "Saved key cleared", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.textButtonColors(contentColor = MaterialTheme.colorScheme.error)
+                    ) {
+                        Icon(imageVector = Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Reset / Remove Saved Key")
+                    }
+                }
 
                 if (saveStatus != null) {
                     Text(

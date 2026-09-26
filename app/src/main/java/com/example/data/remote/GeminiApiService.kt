@@ -13,6 +13,7 @@ import android.graphics.Shader
 import android.util.Base64
 import com.example.BuildConfig
 import com.example.ui.chat.AttachedFile
+import com.example.util.FileAttachmentHelper
 import com.squareup.moshi.Moshi
 import com.squareup.moshi.kotlin.reflect.KotlinJsonAdapterFactory
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +55,7 @@ object GeminiClient {
     private const val BASE_URL = "https://generativelanguage.googleapis.com/"
     private const val PREFS_NAME = "novasearch_prefs"
     private const val KEY_CUSTOM_API_KEY = "custom_gemini_api_key"
-    private const val DEFAULT_EMBEDDED_KEY = "AQ.Ab8RN6KZXt8_U7-5KdZl6TEf7rRsIIDM2KwvvCawAoNMru6iQQ"
+    private const val DEFAULT_EMBEDDED_KEY = ""
 
     // Fast, responsive OkHttpClient with short timeouts (12s connect, 20s read) to eliminate long hangs
     private val okHttpClient = OkHttpClient.Builder()
@@ -100,7 +101,7 @@ object GeminiClient {
 
     fun isApiKeyConfigured(context: Context): Boolean {
         val key = getApiKey(context)
-        return key.isNotBlank() && key != "MY_GEMINI_API_KEY"
+        return key.isNotBlank() && key != "MY_GEMINI_API_KEY" && (key.startsWith("AQ.") || key.startsWith("AIzaSy"))
     }
 
     /**
@@ -115,12 +116,44 @@ object GeminiClient {
     ): SearchResult = withContext(Dispatchers.IO) {
         val apiKey = getApiKey(context)
 
-        // If no API key configured, provide full instant high-grade verified knowledge response
+        // 1. If user entered an unrecognized key format
+        if (apiKey.isNotBlank() && !apiKey.startsWith("AQ.") && !apiKey.startsWith("AIzaSy")) {
+            if (attachments.isNotEmpty()) {
+                return@withContext getFileAnalysisResponse(
+                    query = query,
+                    mode = mode,
+                    customPrompt = customPrompt,
+                    attachments = attachments,
+                    errorReason = "Unrecognized Key Format: Google Gemini keys start with 'AQ.' or 'AIzaSy'. Your key starts with '${apiKey.take(8)}...'"
+                )
+            }
+            return@withContext SearchResult(
+                query = query,
+                answer = "⚠️ **Unrecognized Gemini API Key Format**\n\nYour saved key begins with `${apiKey.take(8)}...`. Google AI Studio Gemini keys begin with `AQ.` (new Auth keys) or `AIzaSy` (standard keys).\n\n### How to get your free key:\n1. Open **[aistudio.google.com/apikey](https://aistudio.google.com/apikey)** in your browser.\n2. Tap **Create API Key**.\n3. Copy the key (starting with `AQ.` or `AIzaSy...`).\n4. In NovaSearch, tap the **Settings (⚙️)** icon at the top right, paste your key, and tap **Save Key**.",
+                mode = mode,
+                customPrompt = customPrompt,
+                keyTakeaways = listOf("Keys begin with 'AQ.' or 'AIzaSy'", "Free key from aistudio.google.com/apikey", "Update in Settings (⚙️)"),
+                followUpQuestions = listOf("Where do I find my API key?", "How do I add the key to NovaSearch?"),
+                isSuccess = false,
+                errorMessage = "Unrecognized API Key format"
+            )
+        }
+
+        // 2. If no API key configured
         if (!isApiKeyConfigured(context)) {
+            if (attachments.isNotEmpty()) {
+                return@withContext getFileAnalysisResponse(
+                    query = query,
+                    mode = mode,
+                    customPrompt = customPrompt,
+                    attachments = attachments,
+                    errorReason = "No Gemini API Key configured. Add your free key in Settings (⚙️) to ask Gemini questions about this file."
+                )
+            }
             return@withContext getVerifiedKnowledgeResponse(query, mode, customPrompt, isOfflineFallback = false)
         }
 
-        // Ordered list of models to try for optimal speed and multimodal accuracy
+        // 3. Candidate models (Gemini 2.5 Flash and Gemini 3.5 Flash)
         val candidateModels = listOf(
             "gemini-2.5-flash",
             "gemini-3.5-flash"
@@ -135,7 +168,7 @@ object GeminiClient {
 
         val partsArray = JSONArray()
 
-        // 1. Add file attachments (PDFs, Images, Audio, or text documents)
+        // Add file attachments (PDFs, Images, Audio, or text documents)
         for (attachment in attachments) {
             val mime = attachment.mimeType
             val base64 = attachment.base64Data
@@ -153,7 +186,7 @@ object GeminiClient {
             }
         }
 
-        // 2. Add user prompt text
+        // Add user prompt text
         partsArray.put(JSONObject().put("text", fullUserQuery))
 
         val requestJson = JSONObject().apply {
@@ -174,12 +207,14 @@ object GeminiClient {
         }
 
         val requestBody = requestJson.toString().toRequestBody("application/json".toMediaType())
+        var lastErrorMsg: String? = null
 
         for (model in candidateModels) {
             try {
                 val url = "${BASE_URL}v1beta/models/$model:generateContent?key=$apiKey"
                 val httpRequest = Request.Builder()
                     .url(url)
+                    .header("x-goog-api-key", apiKey)
                     .post(requestBody)
                     .build()
 
@@ -197,14 +232,94 @@ object GeminiClient {
                     if (rawText.isNotBlank()) {
                         return@withContext parseSearchResponse(query, rawText, mode, customPrompt)
                     }
+                } else {
+                    val errDetail = try {
+                        val json = JSONObject(responseBody)
+                        json.optJSONObject("error")?.optString("message") ?: response.message
+                    } catch (e: Exception) {
+                        response.message
+                    }
+                    lastErrorMsg = "HTTP ${response.code}: $errDetail"
                 }
             } catch (e: Exception) {
-                // If this model times out or encounters network issue, proceed to next model in chain
+                lastErrorMsg = e.message ?: "Network connection error"
             }
         }
 
-        // If cloud network times out or fails, serve comprehensive verified knowledge immediately
+        // If cloud network failed or timed out:
+        if (attachments.isNotEmpty()) {
+            return@withContext getFileAnalysisResponse(
+                query = query,
+                mode = mode,
+                customPrompt = customPrompt,
+                attachments = attachments,
+                errorReason = lastErrorMsg ?: "Connection timed out"
+            )
+        }
+
         return@withContext getVerifiedKnowledgeResponse(query, mode, customPrompt, isOfflineFallback = true)
+    }
+
+    private fun getFileAnalysisResponse(
+        query: String,
+        mode: String,
+        customPrompt: String?,
+        attachments: List<AttachedFile>,
+        errorReason: String?
+    ): SearchResult {
+        val file = attachments.first()
+        val sb = StringBuilder()
+
+        sb.append("## 📄 Attached File: ${file.name}\n\n")
+        sb.append("* **MIME Type**: `${file.mimeType}`\n")
+        sb.append("* **Size**: ${FileAttachmentHelper.formatFileSize(file.sizeBytes)}\n")
+
+        if (!file.textContent.isNullOrBlank()) {
+            val lines = file.textContent.lines()
+            val words = file.textContent.split("\\s+".toRegex()).filter { it.isNotBlank() }.size
+            sb.append("* **Total Lines**: ${lines.size} lines\n")
+            sb.append("* **Word Count**: $words words\n")
+            sb.append("* **Character Count**: ${file.textContent.length} characters\n\n")
+            sb.append("### Content Preview:\n")
+            sb.append("```\n")
+            sb.append(file.textContent.take(3500))
+            if (file.textContent.length > 3500) {
+                sb.append("\n\n... [Showing first 3,500 characters]")
+            }
+            sb.append("\n```\n\n")
+        } else if (file.mimeType.startsWith("image/")) {
+            sb.append("### 🖼️ Image Attached\n")
+            sb.append("* Image loaded and processed successfully (${FileAttachmentHelper.formatFileSize(file.sizeBytes)}).\n\n")
+        } else if (file.mimeType == "application/pdf") {
+            sb.append("### 📑 PDF Document\n")
+            sb.append("* PDF document loaded and encoded (${FileAttachmentHelper.formatFileSize(file.sizeBytes)}).\n\n")
+        }
+
+        if (errorReason != null) {
+            sb.append("\n---\n")
+            sb.append("> ⚠️ **AI Reasoning Notice**: Cloud response: $errorReason\n")
+            sb.append("> To ask questions, extract specific data, or converse with this file using live Gemini AI, please ensure your free API key (starting with `AIzaSy`) is saved in **Settings (⚙️)** from [aistudio.google.com/apikey](https://aistudio.google.com/apikey).")
+        }
+
+        val takeaways = listOf(
+            "File '${file.name}' processed successfully",
+            "Type: ${file.mimeType} (${FileAttachmentHelper.formatFileSize(file.sizeBytes)})",
+            if (!file.textContent.isNullOrBlank()) "Parsed ${file.textContent.lines().size} lines of text" else "Binary payload encoded for Gemini"
+        )
+
+        return SearchResult(
+            query = query,
+            answer = sb.toString(),
+            mode = mode,
+            customPrompt = customPrompt,
+            keyTakeaways = takeaways,
+            followUpQuestions = listOf(
+                "How do I set up a Gemini API key?",
+                "What other file formats are supported?",
+                "Explain the extracted content"
+            ),
+            isSuccess = true
+        )
     }
 
     /**
@@ -286,7 +401,11 @@ object GeminiClient {
                 }
                 val url = "${BASE_URL}v1beta/models/imagen-3.0-generate-002:predict?key=$apiKey"
                 val requestBody = imagenJson.toString().toRequestBody("application/json".toMediaType())
-                val httpRequest = Request.Builder().url(url).post(requestBody).build()
+                val httpRequest = Request.Builder()
+                    .url(url)
+                    .header("x-goog-api-key", apiKey)
+                    .post(requestBody)
+                    .build()
 
                 val response = imageHttpClient.newCall(httpRequest).execute()
                 val responseBody = response.body?.string() ?: ""
@@ -539,32 +658,25 @@ object GeminiClient {
                 Pair(text, takeaways)
             }
 
-            // General high-quality analysis
+            // Open-ended queries when offline or without API key
             else -> {
                 val text = """
-                    ## Analysis & Verified Explanation: "$query"
+                    ### 🔍 Question: "$query"
 
-                    ### Comprehensive Overview
-                    The inquiry into **"$query"** encompasses fundamental principles across scientific, operational, and practical domains.
+                    NovaSearch requires an active **Google Gemini API Key** to generate live, open-ended answers and reason dynamically across custom topics.
 
-                    1. **Primary Definition**:
-                       - At its foundational level, $query represents a structured mechanism governing cause, effect, and practical application.
-                       - When analyzed systematically, core behavior adheres to measurable, reproducible properties.
+                    ### 30-Second Quick Setup:
+                    1. Tap the **Key / Settings (⚙️)** icon in the top-right corner of the app.
+                    2. Visit **[aistudio.google.com/apikey](https://aistudio.google.com/apikey)** in your browser and tap **Create API Key**.
+                    3. Copy your key (starts with `AIzaSy...`).
+                    4. Paste it into NovaSearch Settings and tap **Save Key**.
 
-                    2. **Key Mechanisms & Operational Framework**:
-                       - **Initiation**: Identifying underlying constraints and baseline criteria.
-                       - **Transformation**: How energy, data, or processes shift states under external influence.
-                       - **Equilibrium & Optimization**: Achieving consistent, high-efficiency results with minimal error margins.
-
-                    3. **Practical Real-World Application**:
-                       - Modern systems leverage these exact foundational tenets to standardize processes, maximize throughput, and eliminate systemic bottlenecks.
-                       - Systematic validation ensures high reliability across diverse environments.
+                    *Once saved, NovaSearch connects directly to Google's latest Gemini 2.5 Flash model for lightning-fast answers, code generation, and multimodal file reasoning.*
                 """.trimIndent()
                 val takeaways = listOf(
-                    "Clear conceptual definition enables rigorous execution.",
-                    "Systematic evaluation reveals actionable underlying patterns.",
-                    "Practical application bridges theory with real-world utility.",
-                    "NovaSearch synthesizes structured findings for rapid decision making."
+                    "Live dynamic answers require a free Gemini API key",
+                    "Keys always begin with 'AIzaSy' from aistudio.google.com/apikey",
+                    "Tap Settings (⚙️) at the top right to configure"
                 )
                 Pair(text, takeaways)
             }
